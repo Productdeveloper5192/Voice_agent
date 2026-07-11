@@ -9,13 +9,17 @@ import {
   useDisconnectButton,
   TrackToggle,
 } from '@livekit/components-react';
-import { Track, ConnectionState } from 'livekit-client';
+import { Track, ConnectionState, RoomEvent } from 'livekit-client';
 import '@livekit/components-styles';
 import './App.css';
 import ToolVisualizer from './components/ToolVisualizer';
 
+const showDebugTracks = import.meta.env.VITE_SHOW_DEBUG_TRACKS === "true";
+const showAgentActivity = import.meta.env.VITE_SHOW_AGENT_ACTIVITY !== "false";
+
 function App() {
   const [token, setToken] = useState("");
+  const [tokenError, setTokenError] = useState("");
   const [isConnected, setIsConnected] = useState(false);
   const [hasEverConnected, setHasEverConnected] = useState(false);
   const userInitiatedDisconnect = useRef(false);
@@ -27,18 +31,29 @@ function App() {
     if (didFetch.current) return;
     didFetch.current = true;
 
-    // Fetch user token from our backend
     const backendUrl = import.meta.env.VITE_BACKEND_URL || "http://localhost:8000";
     fetch(`${backendUrl}/getToken?name=User`)
-      .then(res => res.json())
-      .then(data => setToken(data.token));
+      .then(res => {
+        if (!res.ok) throw new Error(`Token request failed: ${res.status}`);
+        return res.json();
+      })
+      .then(data => {
+        if (!data.token) throw new Error("Token response did not include a token");
+        setToken(data.token);
+      })
+      .catch(error => {
+        console.error("Unable to fetch LiveKit token:", error);
+        setTokenError("Unable to start the consultation. Please check the backend server.");
+      });
   }, []);
 
+  if (tokenError) return <div className="loading">{tokenError}</div>;
   if (!token) return <div className="loading">Initializing Neural Interface...</div>;
 
   if (!isConnected) {
     return (
       <div className="pre-join-screen">
+        <AgentAvatarVisual compact />
         <h1>Clinic Voice Assistant</h1>
         <button className="start-button" onClick={() => setIsConnected(true)}>
           Start Consultation
@@ -48,30 +63,26 @@ function App() {
   }
 
   const handleConnected = () => {
-    console.log("Connected to room");
     setHasEverConnected(true);
   };
 
   const handleDisconnected = () => {
-    console.log("Disconnected from room");
-    // If user initiated the disconnect, go straight back to start
     if (userInitiatedDisconnect.current) {
       userInitiatedDisconnect.current = false;
       setIsConnected(false);
       setHasEverConnected(false);
       return;
     }
-    // Otherwise, if we never connected, also go back to start
+
     if (!hasEverConnected) {
       setIsConnected(false);
     }
-    // If hasEverConnected is true, we'll let RoomContent handle showing reconnect overlay
   };
 
   return (
     <LiveKitRoom
-      video={false} // Don't publish my video
-      audio={true}  // Publish my audio
+      video={false}
+      audio={true}
       token={token}
       serverUrl={url}
       connect={true}
@@ -98,71 +109,51 @@ function RoomContent({ setIsConnected, userInitiatedDisconnect }: {
     avatar: 'pending'
   });
   const [wasEverReady, setWasEverReady] = useState(false);
+  const [readinessTimedOut, setReadinessTimedOut] = useState(false);
 
   const tracks = useTracks([Track.Source.Camera, Track.Source.Microphone]);
   const videoTrack = tracks.find(t => t.publication.kind === Track.Kind.Video);
   const room = useRoomContext();
   const connectionState = useConnectionState();
 
-  // Listen for system status updates from backend
   useEffect(() => {
-    if (!room) {
-      console.log("Room not ready yet");
-      return;
-    }
+    if (!room) return;
 
-    console.log("Setting up data listener for room:", room.name);
-
-    const handleDataReceived = (payload: Uint8Array, _participant: any) => {
-      const decoder = new TextDecoder();
-      const message = decoder.decode(payload);
-
-      console.log("Received data:", message);
+    const handleDataReceived = (payload: Uint8Array) => {
+      const message = new TextDecoder().decode(payload);
 
       try {
         const data = JSON.parse(message);
         if (data.type === 'system_status') {
-          console.log(`System status: ${data.component} -> ${data.status}`);
           setSystemStatus(prev => ({
             ...prev,
             [data.component]: data.status
           }));
         }
-      } catch (e) {
-        console.log("Non-JSON message:", message);
+      } catch {
+        // Ignore non-JSON data-channel messages from third-party tracks.
       }
     };
 
-    room.on('dataReceived', handleDataReceived);
-    console.log("Data listener attached");
-
+    room.on(RoomEvent.DataReceived, handleDataReceived);
     return () => {
-      console.log("Removing data listener");
-      room.off('dataReceived', handleDataReceived);
+      room.off(RoomEvent.DataReceived, handleDataReceived);
     };
   }, [room]);
 
-  // Request permissions ONLY after connected to room
   useEffect(() => {
-    if (connectionState !== ConnectionState.Connected) {
-      console.log("Waiting for room connection before requesting permissions...");
-      return;
-    }
-
-    if (permissionsGranted) return;
+    if (connectionState !== ConnectionState.Connected || permissionsGranted) return;
 
     const requestPermissions = async () => {
       try {
-        console.log("Room connected. Requesting microphone permissions...");
         await navigator.mediaDevices.getUserMedia({ audio: true });
 
         try {
           await navigator.mediaDevices.getUserMedia({ video: true });
-        } catch (err) {
-          console.log("Camera access denied (optional)");
+        } catch {
+          // Camera is optional; the assistant can continue with audio only.
         }
 
-        console.log("Permissions granted");
         setPermissionsGranted(true);
       } catch (err) {
         console.error("Microphone access denied:", err);
@@ -173,110 +164,108 @@ function RoomContent({ setIsConnected, userInitiatedDisconnect }: {
     requestPermissions();
   }, [connectionState, permissionsGranted]);
 
-  // Check if all systems are ready AND avatar video is streaming
+  useEffect(() => {
+    if (wasEverReady || connectionState !== ConnectionState.Connected) return;
+
+    const timeout = setTimeout(() => {
+      console.warn("System readiness timed out; showing voice session fallback.");
+      setReadinessTimedOut(true);
+    }, 45000);
+
+    return () => clearTimeout(timeout);
+  }, [connectionState, wasEverReady]);
+
   const avatarReady = systemStatus.avatar === 'ready' && videoTrack !== undefined;
   const avatarUnavailable = systemStatus.avatar === 'unavailable' || systemStatus.avatar === 'error';
+  const coreSystemsReady =
+    systemStatus.stt === 'ready' &&
+    systemStatus.llm === 'ready' &&
+    systemStatus.tts === 'ready' &&
+    systemStatus.database === 'ready';
 
   const allSystemsReady =
     connectionState === ConnectionState.Connected &&
     permissionsGranted &&
-    systemStatus.stt === 'ready' &&
-    systemStatus.llm === 'ready' &&
-    systemStatus.tts === 'ready' &&
-    systemStatus.database === 'ready' &&
-    (avatarReady || avatarUnavailable);
+    ((coreSystemsReady && (avatarReady || avatarUnavailable)) || readinessTimedOut);
 
-  console.log("System status:", systemStatus);
-  console.log("All systems ready:", allSystemsReady);
-  console.log("Avatar ready:", avatarReady, "Video track:", !!videoTrack);
-
-  // Track if we were ever ready (to distinguish reconnecting from initial loading)
   useEffect(() => {
     if (allSystemsReady && !wasEverReady) {
       setWasEverReady(true);
     }
   }, [allSystemsReady, wasEverReady]);
 
-  // Detect reconnecting state from connection state
   const isReconnecting = wasEverReady && connectionState === ConnectionState.Reconnecting;
   const isDisconnected = wasEverReady && connectionState === ConnectionState.Disconnected;
 
-  // Handle disconnection timeout - if disconnected for too long, go back to start
   useEffect(() => {
     if (!isDisconnected) return;
 
     const timeout = setTimeout(() => {
-      console.log("Disconnect timeout - returning to start");
       setIsConnected(false);
-    }, 30000); // 30 second timeout
+    }, 30000);
 
     return () => clearTimeout(timeout);
   }, [isDisconnected, setIsConnected]);
 
-  // Show loading screen until all systems are ready (unless reconnecting)
   if (!allSystemsReady && !wasEverReady) {
     return (
       <div className="loading-screen-container">
         <div className="loading-content">
-          <div className="avatar-icon" style={{
-            animation: 'pulse 1.5s infinite',
-            fontSize: '5rem',
-            marginBottom: '2rem'
-          }}>🤖</div>
+          <AgentAvatarVisual compact />
 
           <h2 style={{ marginBottom: '2rem' }}>Warming Up Systems</h2>
 
           <div className="system-status-list">
             <SystemStatusItem
-              icon="🔐"
+              icon="MIC"
               label="Permissions"
               status={permissionsGranted ? 'ready' : 'pending'}
             />
             <SystemStatusItem
-              icon="🎤"
+              icon="STT"
               label="Speech-to-Text"
               status={systemStatus.stt}
             />
             <SystemStatusItem
-              icon="🧠"
+              icon="LLM"
               label="AI Model"
               status={systemStatus.llm}
             />
             <SystemStatusItem
-              icon="🔊"
+              icon="TTS"
               label="Text-to-Speech"
               status={systemStatus.tts}
             />
             <SystemStatusItem
-              icon="💾"
+              icon="DB"
               label="Database"
               status={systemStatus.database}
             />
             <SystemStatusItem
-              icon="👤"
+              icon="AV"
               label="Avatar"
               status={videoTrack ? 'ready' : (systemStatus.avatar === 'ready' ? 'initializing' : systemStatus.avatar)}
             />
+            {readinessTimedOut && (
+              <SystemStatusItem icon="NET" label="Fallback" status="timeout" />
+            )}
           </div>
         </div>
       </div>
     );
   }
 
-  // Only show call screen after all systems are ready
   return (
     <>
       {(isReconnecting || isDisconnected) && (
         <div className="reconnecting-overlay">
           <div className="reconnecting-content">
-            <div className="reconnecting-spinner">⟳</div>
+            <div className="reconnecting-spinner">...</div>
             <h3>{isDisconnected ? 'Connection Lost' : 'Reconnecting...'}</h3>
             <p>{isDisconnected ? 'Attempting to reconnect...' : 'Please wait...'}</p>
           </div>
         </div>
       )}
-
-      <h1>Clinic Voice Assistant</h1>
 
       <div className="avatar-container">
         <AvatarRenderer />
@@ -287,8 +276,8 @@ function RoomContent({ setIsConnected, userInitiatedDisconnect }: {
         <CustomControlBar userInitiatedDisconnect={userInitiatedDisconnect} />
       </div>
 
-      <ToolVisualizer />
-      <TrackDebug />
+      {showAgentActivity && <ToolVisualizer />}
+      {showDebugTracks && <TrackDebug />}
     </>
   );
 }
@@ -300,17 +289,19 @@ function SystemStatusItem({ icon, label, status }: { icon: string; label: string
       case 'initializing': return '#ffaa00';
       case 'error': return '#ff4444';
       case 'unavailable': return '#888888';
+      case 'timeout': return '#ffaa00';
       default: return '#555555';
     }
   };
 
   const getStatusText = () => {
     switch (status) {
-      case 'ready': return '✓ Ready';
-      case 'initializing': return '⟳ Loading...';
-      case 'error': return '✗ Error';
+      case 'ready': return 'Ready';
+      case 'initializing': return 'Loading...';
+      case 'error': return 'Error';
       case 'unavailable': return '- Unavailable';
-      default: return '○ Waiting...';
+      case 'timeout': return 'Continuing';
+      default: return 'Waiting...';
     }
   };
 
@@ -337,7 +328,6 @@ function AvatarRenderer() {
   const tracks = useTracks([Track.Source.Camera, Track.Source.Microphone, Track.Source.ScreenShare]);
 
   const videoTrack = tracks.find(t => t.publication.kind === Track.Kind.Video);
-  const audioTrack = tracks.find(t => t.publication.kind === Track.Kind.Audio);
 
   if (videoTrack) {
     return (
@@ -348,20 +338,31 @@ function AvatarRenderer() {
     );
   }
 
-  if (audioTrack) {
-    return (
-      <div className="avatar-placeholder">
-        <div className="avatar-icon" style={{ animation: 'pulse 2s infinite' }}>🎙️</div>
-        <span>Voice Connected</span>
-        <span style={{ fontSize: '0.8rem', opacity: 0.6 }}>Avatar Video Unavailable</span>
-      </div>
-    );
-  }
-
   return (
     <div className="avatar-placeholder">
-      <div className="avatar-icon">🤖</div>
-      <span>Connecting...</span>
+      <div className="avatar-fallback-content">
+        <span className="avatar-fallback-icon">🎙️</span>
+        <span>Clinic Voice Assistant</span>
+      </div>
+    </div>
+  );
+}
+
+function AgentAvatarVisual({ compact = false }: { compact?: boolean }) {
+  return (
+    <div className={compact ? "agent-visual agent-visual-compact" : "agent-visual"}>
+      <div className="agent-avatar-home">
+        <div className="avatar-pulse-ring" />
+        <div className="avatar-pulse-ring avatar-pulse-ring-2" />
+        <div className="avatar-icon-circle">
+          <svg viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" className="avatar-medical-icon">
+            <circle cx="32" cy="20" r="10" stroke="#00ff88" strokeWidth="2" fill="rgba(0,255,136,0.08)" />
+            <path d="M16 52c0-8.837 7.163-16 16-16s16 7.163 16 16" stroke="#00ff88" strokeWidth="2" fill="rgba(0,255,136,0.05)" />
+            <path d="M30 16v8M26 20h8" stroke="#00ff88" strokeWidth="2" strokeLinecap="round" />
+          </svg>
+        </div>
+        <span className="avatar-home-label">AI Assistant</span>
+      </div>
     </div>
   );
 }

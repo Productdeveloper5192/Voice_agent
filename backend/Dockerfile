@@ -16,9 +16,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Make start script executable
-RUN chmod +x start.sh
+RUN sed -i 's/\r$//' start.sh && chmod +x start.sh
 
 # Environment variables will be provided by Railway
 # Port will be provided by Railway
 
-CMD ["./start.sh"]
+CMD ["/bin/bash", "/app/start.sh"]

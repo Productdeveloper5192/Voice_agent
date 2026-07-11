@@ -1,4 +1,7 @@
 #!/bin/bash
+set -e
+
+PORT="${PORT:-8000}"
 
 # Start the Agent Worker in the background
 # Output logs to stdout

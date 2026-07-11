@@ -1,9 +1,7 @@
 import logging
+import json
 from livekit.agents import llm
-from typing import Annotated # Keep if needed, or remove. I'll keep it just in case but I removed usages.
 from db import (
-    get_user_by_contact, 
-    get_user_by_email,
     get_user_by_contact_or_email,
     create_user, 
     get_appointments, 
@@ -11,7 +9,6 @@ from db import (
     reschedule_appointment,
     cancel_appointment, 
     check_availability,
-    get_chat_history,
     update_session_user
 )
 
@@ -26,11 +23,21 @@ class AgentTools:
 
     async def _emit_event(self, event_type: str, message: str):
         if self._room:
-            logger.info(f"Emitting event: {event_type} - {message}")
+            logger.info("Emitting event: %s", event_type)
             await self._room.local_participant.publish_data(
-                payload=f'{{"type": "{event_type}", "message": "{message}"}}',
+                payload=json.dumps({"type": event_type, "message": message}),
                 reliable=True
             )
+
+    def _mask_identifier(self, value: str) -> str:
+        cleaned = value.strip()
+        if "@" in cleaned:
+            name, domain = cleaned.split("@", 1)
+            return f"{name[:2]}***@{domain}"
+        digits = "".join(ch for ch in cleaned if ch.isdigit())
+        if len(digits) >= 4:
+            return f"***{digits[-4:]}"
+        return "***"
 
     @llm.function_tool(description="Identify the user by their contact number or email address")
     async def identify_user(
@@ -45,30 +52,30 @@ class AgentTools:
         Args:
             identifier: User's mobile number or email address
         """
-        await self._emit_event("tool_call", f"Identifying user: {identifier}")
-        logger.info(f"Identifying user with identifier: {identifier}")
+        await self._emit_event("tool_call", "Identifying user")
+        logger.info("Identifying user with identifier: %s", self._mask_identifier(identifier))
         
         # Search by contact number OR email
         user = await get_user_by_contact_or_email(identifier)
         
         if not user:
             await self._emit_event("tool_result", "User not found in system")
-            return f"No user found with identifier {identifier}. The user needs to create an account first."
+            return "No user found with that identifier. The user needs to create an account first."
             
         self._user = user
         
         # Update session with user_id (tag this session to this user)
         await update_session_user(self._session_id, user['id'])
-        logger.info(f"Session {self._session_id} tagged to user {user['id']}")
+        logger.info("Session %s tagged to identified user", self._session_id)
         
         # Set user ID in chat context for message saving
         if self._chat_ctx and hasattr(self._chat_ctx, 'set_user_id'):
             self._chat_ctx.set_user_id(user['id'])
         
-        msg = f"User identified: {user.get('name', 'Guest')} (ID: {user['id']})."
+        msg = f"User identified: {user.get('name', 'Guest')}."
         
         # NO CHAT HISTORY LOADING - Each session is independent
-        logger.info(f"User identified - session-scoped memory only, no history loaded")
+        logger.info("User identified - session-scoped memory only, no history loaded")
         
         await self._emit_event("tool_result", msg)
         return msg
@@ -143,17 +150,19 @@ class AgentTools:
             last_name: User's verified last name
             email: User's verified email address
         """
-        await self._emit_event("tool_call", f"Creating user account for {first_name} {last_name}")
-        logger.info(f"Creating new user account: {contact_number}, {first_name} {last_name}, {email}")
+        await self._emit_event("tool_call", "Creating user account")
+        logger.info("Creating new user account for %s", self._mask_identifier(email or contact_number))
         
-        # Combine first and last name
+        # Normalize the contact number before saving so lookups are consistent
+        normalized_contact = "".join(ch for ch in contact_number if ch.isdigit())
         full_name = f"{first_name} {last_name}"
         
         # Create the user
-        user = await create_user(contact_number=contact_number, name=full_name, email=email)
+        user = await create_user(contact_number=normalized_contact, name=full_name, email=email)
         
         if user:
             self._user = user
+            await update_session_user(self._session_id, user['id'])
             
             # Set user ID in chat context
             if self._chat_ctx and hasattr(self._chat_ctx, 'set_user_id'):
@@ -163,7 +172,7 @@ class AgentTools:
             return f"Account created successfully! Welcome {full_name}. Your information has been securely saved."
         else:
             await self._emit_event("tool_result", "Failed to create account")
-            return "I'm sorry, there was an error creating your account. Please try again."
+            return "I'm sorry, there was an error creating your account. Please try again or provide a different contact number or email."
 
     @llm.function_tool(description="Check if a specific date and time slot is available")
     async def check_time_slot_availability(
@@ -180,7 +189,7 @@ class AgentTools:
             time: The time in HH:MM format (24-hour)
         """
         await self._emit_event("tool_call", f"Checking availability for {date} at {time}")
-        logger.info(f"Checking availability: {date} {time}")
+        logger.info("Checking availability for requested slot")
         
         is_available = await check_availability(date, time)
         
@@ -210,13 +219,14 @@ class AgentTools:
         if not self._user:
             return "Please identify the user first before booking."
         
-        await self._emit_event("tool_call", f"Booking appointment at {start_time}")
-        logger.info(f"Booking appointment for {self._user['id']} at {start_time}")
+        await self._emit_event("tool_call", "Booking appointment")
+        logger.info("Booking appointment for identified user")
         appt = await create_appointment(self._user['id'], start_time, duration)
         if appt:
             await self._emit_event("tool_result", "Appointment booked successfully")
             return f"Appointment booked successfully for {start_time}."
-        return "Failed to book appointment."
+        await self._emit_event("tool_result", "Appointment booking failed")
+        return "Failed to book appointment. That slot may no longer be available, so please choose another time."
 
     @llm.function_tool(description="Reschedule an existing appointment to a new time")
     async def reschedule_user_appointment(
@@ -236,7 +246,7 @@ class AgentTools:
             return "Please identify the user first before rescheduling."
         
         await self._emit_event("tool_call", f"Rescheduling appointment {appointment_id} to {new_time}")
-        logger.info(f"Rescheduling appointment {appointment_id} to {new_time}")
+        logger.info("Rescheduling appointment for identified user")
         
         # Verify the appointment belongs to this user
         user_appointments = await get_appointments(self._user['id'])
@@ -252,7 +262,7 @@ class AgentTools:
             await self._emit_event("tool_result", "Appointment rescheduled successfully")
             return f"Your appointment has been rescheduled to {new_time}."
         else:
-            return "I'm sorry, there was an error rescheduling your appointment. Please try again."
+            return "I'm sorry, there was an error rescheduling your appointment. The new slot may already be booked, so please try another time."
 
     @llm.function_tool(description="Retrieve user's past and upcoming appointments")
     async def retrieve_appointments(self):
@@ -285,7 +295,7 @@ class AgentTools:
             return "Please identify the user first before canceling an appointment."
         
         await self._emit_event("tool_call", f"Canceling appointment {appointment_id}")
-        logger.info(f"Canceling appointment {appointment_id} for user {self._user['id']}")
+        logger.info("Canceling appointment for identified user")
         
         # First verify the appointment belongs to this user
         user_appointments = await get_appointments(self._user['id'])

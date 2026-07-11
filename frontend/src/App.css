@@ -12,23 +12,41 @@ body {
   place-items: center;
   min-width: 320px;
   min-height: 100vh;
-  background: radial-gradient(circle at 50% 10%, #1a1a2e 0%, #000000 100%);
+  background:
+    linear-gradient(180deg, rgba(3, 8, 10, 0.58), rgba(3, 8, 10, 0.88)),
+    url('/clinic-bg-realistic.png') center / cover no-repeat fixed;
   font-family: 'Inter', system-ui, -apple-system, sans-serif;
   color: var(--text-primary);
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 50% 38%, rgba(32, 221, 202, 0.12), transparent 34%),
+    linear-gradient(90deg, rgba(0, 0, 0, 0.64), transparent 28%, transparent 72%, rgba(0, 0, 0, 0.64));
+  z-index: 0;
 }
 
 #root {
   width: 100%;
-  height: 100vh;
+  min-height: 100vh;
+  position: relative;
+  z-index: 1;
 }
 
 .lk-room-container {
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
-  height: 100%;
+  justify-content: flex-start;
+  min-height: 100vh;
+  padding-top: 1rem;
+  padding-bottom: 2rem;
   position: relative;
 }
 
@@ -47,12 +65,10 @@ h1 {
 .avatar-container {
   width: 100%;
   max-width: 800px;
-  aspect-ratio: 16/9;
-  border-radius: 24px;
   overflow: hidden;
-  background: #000;
-  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
-  border: 1px solid var(--glass-border);
+  background: transparent;
+  box-shadow: none;
+  border: none;
   position: relative;
   display: flex;
   align-items: center;
@@ -61,17 +77,19 @@ h1 {
 
 .avatar-video {
   width: 100%;
-  height: 100%;
-  object-fit: cover;
+  height: auto;
+  max-height: 70vh;
+  object-fit: contain;
 }
 
 .avatar-placeholder {
-  font-size: 5rem;
   color: var(--text-secondary);
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 1rem;
+  width: 100%;
+  padding: 1.5rem;
 }
 
 .avatar-placeholder span {
@@ -79,6 +97,147 @@ h1 {
   letter-spacing: 0.1em;
   text-transform: uppercase;
   opacity: 0.5;
+}
+
+.agent-visual {
+  width: min(86%, 560px);
+  aspect-ratio: 16 / 9;
+  border-radius: 18px;
+  overflow: hidden;
+  position: relative;
+  border: 1px solid rgba(61, 231, 211, 0.32);
+  box-shadow: 0 22px 60px rgba(0, 0, 0, 0.45), inset 0 0 34px rgba(61, 231, 211, 0.08);
+  background: #061115;
+}
+
+.agent-visual-compact {
+  width: min(72vw, 360px);
+  margin-bottom: 2rem;
+}
+
+.agent-visual img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.avatar-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(180deg, rgba(4, 8, 16, 0.98), rgba(8, 16, 28, 0.98));
+}
+
+.avatar-fallback-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  color: #c1ffea;
+  text-align: center;
+}
+
+.avatar-fallback-icon {
+  font-size: 2rem;
+}
+
+.agent-avatar-fallback {
+  width: 100%;
+  height: 100%;
+  display: grid;
+  place-items: center;
+  background: linear-gradient(180deg, rgba(12, 18, 28, 0.9), rgba(4, 8, 16, 0.96));
+  color: #d2fff8;
+  font-weight: 600;
+}
+
+/* --- Home Page Avatar Visual --- */
+.avatar-home {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.agent-avatar-home {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6rem;
+  position: relative;
+  background:
+    radial-gradient(circle at 50% 40%, rgba(0, 255, 136, 0.06) 0%, transparent 60%),
+    linear-gradient(180deg, rgba(6, 14, 22, 0.95), rgba(2, 8, 14, 0.98));
+}
+
+.avatar-icon-circle {
+  width: 90px;
+  height: 90px;
+  border-radius: 50%;
+  background: rgba(0, 255, 136, 0.06);
+  border: 2px solid rgba(0, 255, 136, 0.3);
+  display: grid;
+  place-items: center;
+  position: relative;
+  z-index: 2;
+}
+
+.avatar-medical-icon {
+  width: 48px;
+  height: 48px;
+}
+
+.avatar-pulse-ring {
+  position: absolute;
+  width: 120px;
+  height: 120px;
+  border-radius: 50%;
+  border: 1px solid rgba(0, 255, 136, 0.15);
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -60%);
+  animation: pulseRing 3s ease-out infinite;
+  z-index: 1;
+}
+
+.avatar-pulse-ring-2 {
+  width: 150px;
+  height: 150px;
+  animation-delay: 1.5s;
+}
+
+@keyframes pulseRing {
+  0% {
+    transform: translate(-50%, -60%) scale(0.8);
+    opacity: 0.6;
+  }
+  100% {
+    transform: translate(-50%, -60%) scale(1.6);
+    opacity: 0;
+  }
+}
+
+.avatar-home-label {
+  font-size: 1rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: #e0fff6;
+  z-index: 2;
+  margin-top: 0.3rem;
+}
+
+.avatar-home-sub {
+  font-size: 0.72rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(0, 255, 136, 0.5);
+  z-index: 2;
 }
 
 .controls {
@@ -127,8 +286,9 @@ h1 {
   align-items: center;
   justify-content: center;
   height: 100vh;
-  gap: 2rem;
+  gap: 1.5rem;
   z-index: 20;
+  padding: 1.5rem;
 }
 
 .start-button {
@@ -155,7 +315,9 @@ h1 {
   justify-content: center;
   height: 100vh;
   width: 100%;
-  background: radial-gradient(circle at 50% 10%, #1a1a2e 0%, #000000 100%);
+  background:
+    linear-gradient(180deg, rgba(3, 8, 10, 0.52), rgba(3, 8, 10, 0.9)),
+    url('/clinic-bg-realistic.png') center / cover no-repeat fixed;
 }
 
 .loading-content {
@@ -224,6 +386,54 @@ h1 {
   font-size: 0.9rem;
   font-weight: 600;
   text-align: right;
+}
+
+.tool-visualizer {
+  width: min(92vw, 600px);
+  margin-top: 1.5rem;
+  padding: 1rem 1.1rem;
+  border: 1px solid rgba(167, 255, 243, 0.2);
+  border-radius: 12px;
+  background: rgba(6, 17, 21, 0.68);
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.24);
+}
+
+.tool-visualizer-header {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 0.75rem;
+}
+
+.tool-visualizer h2 {
+  margin: 0;
+  font-size: 0.84rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #dffdf8;
+}
+
+.activity-dot {
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 999px;
+  background: #00ff88;
+  box-shadow: 0 0 16px rgba(0, 255, 136, 0.8);
+}
+
+.current-status {
+  color: #ffffff;
+  font-size: 0.98rem;
+  font-weight: 650;
+}
+
+.history {
+  margin-top: 0.75rem;
+  display: grid;
+  gap: 0.35rem;
+  color: rgba(255, 255, 255, 0.62);
+  font-size: 0.86rem;
 }
 
 /* Reconnecting Overlay */

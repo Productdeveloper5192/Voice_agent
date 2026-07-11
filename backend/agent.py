@@ -1,5 +1,6 @@
 import logging
 import os
+import json
 from pathlib import Path
 from dotenv import load_dotenv
 from datetime import datetime
@@ -9,7 +10,7 @@ from livekit import agents
 from livekit.agents import JobContext, WorkerOptions, cli, llm
 import asyncio
 from livekit.agents.voice import Agent, AgentSession
-from livekit.plugins import deepgram, cartesia, openai, bey, silero
+from livekit.plugins import deepgram, openai, bey, silero
 
 from tools import AgentTools
 import db
@@ -21,20 +22,40 @@ load_dotenv(dotenv_path=env_path, override=True)
 
 logger = logging.getLogger("voice-agent")
 
-# Configure Gemini as OpenAI compatible
-os.environ["OPENAI_API_KEY"] = os.environ.get("GOOGLE_API_KEY", "").strip()
-os.environ["OPENAI_BASE_URL"] = "https://generativelanguage.googleapis.com/v1beta/openai/"
+using_azure_openai = bool(os.environ.get("AZURE_OPENAI_API_KEY", "").strip())
 
-# Verify all required API keys are present
-required_keys = ["DEEPGRAM_API_KEY", "CARTESIA_API_KEY", "BEY_API_KEY", "GOOGLE_API_KEY"]
+if not using_azure_openai:
+    # Configure Gemini as OpenAI-compatible when Azure OpenAI is not configured.
+    os.environ["OPENAI_API_KEY"] = os.environ.get("GOOGLE_API_KEY", "").strip()
+    os.environ["OPENAI_BASE_URL"] = "https://generativelanguage.googleapis.com/v1beta/openai/"
+
+required_keys = [
+    "DEEPGRAM_API_KEY",
+    "BEY_API_KEY",
+    "SUPABASE_URL",
+    "SUPABASE_KEY",
+]
+if using_azure_openai:
+    required_keys.extend([
+        "AZURE_OPENAI_ENDPOINT",
+        "AZURE_OPENAI_API_KEY",
+        "AZURE_OPENAI_DEPLOYMENT",
+    ])
+else:
+    required_keys.append("GOOGLE_API_KEY")
+
 for key in required_keys:
     val = os.environ.get(key, "").strip()
     if val:
-        logger.info(f"{key} loaded: {val[:8]}...")
+        logger.info("%s loaded", key)
     else:
-        logger.error(f"MISSING: {key}")
+        logger.error("MISSING: %s", key)
 
 bey_key = os.environ.get("BEY_API_KEY", "").strip()
+llm_model = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash-exp").strip()
+azure_openai_deployment = os.environ.get("AZURE_OPENAI_DEPLOYMENT", "").strip()
+azure_openai_api_version = os.environ.get("AZURE_OPENAI_API_VERSION", "2024-10-21").strip()
+deepgram_tts_model = os.environ.get("DEEPGRAM_TTS_MODEL", "aura-orion-en").strip()
 
 # Function to generate system instructions with current date/time
 def get_system_instructions():
@@ -250,14 +271,18 @@ async def entrypoint(ctx: JobContext):
         logger.info(f"[PIPELINE] ✓ Tool calls completed: {len(calls)}")
     
     # Create the Agent configuration with Silero VAD
-    logger.info("Configuring agent with Deepgram STT, Gemini LLM, Cartesia TTS, and Silero VAD")
+    logger.info("Configuring agent with Deepgram STT, LLM, Deepgram TTS, and Silero VAD")
     
     # Broadcast system initialization status to frontend
     async def broadcast_status(component: str, status: str):
         logger.info(f"Broadcasting status: {component} -> {status}")
         try:
             await ctx.room.local_participant.publish_data(
-                payload=f'{{"type": "system_status", "component": "{component}", "status": "{status}"}}',
+                payload=json.dumps({
+                    "type": "system_status",
+                    "component": component,
+                    "status": status,
+                }),
                 reliable=True
             )
             logger.info(f"Broadcasted {component} status")
@@ -272,23 +297,30 @@ async def entrypoint(ctx: JobContext):
     
     # 2. Initialize LLM
     await broadcast_status("llm", "initializing")
-    llm_instance = openai.LLM(model="gemini-2.0-flash-exp")
-    logger.info(f"[PIPELINE] Gemini LLM initialized: model=gemini-2.0-flash-exp")
+    if using_azure_openai:
+        llm_instance = openai.LLM.with_azure(
+            azure_deployment=azure_openai_deployment,
+            azure_endpoint=os.environ.get("AZURE_OPENAI_ENDPOINT", "").strip(),
+            api_key=os.environ.get("AZURE_OPENAI_API_KEY", "").strip(),
+            api_version=azure_openai_api_version,
+        )
+        logger.info("[PIPELINE] Azure OpenAI LLM initialized: deployment=%s", azure_openai_deployment)
+    else:
+        llm_instance = openai.LLM(model=llm_model)
+        logger.info("[PIPELINE] Gemini LLM initialized: model=%s", llm_model)
     await broadcast_status("llm", "ready")
     
-    # 3. Initialize TTS
+    # 3. Initialize TTS (Deepgram Aura — uses existing DEEPGRAM_API_KEY)
     await broadcast_status("tts", "initializing")
-    tts_instance = cartesia.TTS(
-        voice="a167e0f3-df7e-4d52-a9c3-f949145efdab"  # User-specified voice ID
-    )
-    logger.info(f"[PIPELINE] Cartesia TTS initialized: {type(tts_instance).__name__} (Voice ID: a167e0f3-df7e-4d52-a9c3-f949145efdab)")
+    tts_instance = deepgram.TTS(model=deepgram_tts_model)
+    logger.info("[PIPELINE] Deepgram TTS initialized: model=%s", deepgram_tts_model)
     await broadcast_status("tts", "ready")
     
     # 4. Test Database Connection
     await broadcast_status("database", "initializing")
     try:
         # Quick database connectivity test
-        session_test = await get_session(session_id)
+        await get_session(session_id)
         logger.info(f"[PIPELINE] Supabase database connected")
         await broadcast_status("database", "ready")
     except Exception as e:
@@ -315,42 +347,37 @@ async def entrypoint(ctx: JobContext):
     await session.start(agent=agent_config, room=ctx.room)
     logger.info("[PIPELINE] ✓ Agent session started - audio pipeline active")
     
-    # Wait for session to be fully ready before proceeding
-    await asyncio.sleep(1)
-    
-    # Initialize Avatar Session AFTER agent session is ready
-    await broadcast_status("avatar", "initializing")
-    avatar = bey.AvatarSession(api_key=bey_key)
-    avatar_ready = False
-    
-    try:
-        logger.info("[PIPELINE] Starting Beyond Avatar Session...")
-        # Increase timeout and wait for avatar to be ready
-        await asyncio.wait_for(avatar.start(session, room=ctx.room), timeout=20.0)
-        logger.info("[PIPELINE] ✓ Avatar session started successfully")
-        avatar_ready = True
-        await broadcast_status("avatar", "ready")
-        # Give avatar extra time to fully initialize streaming
-        await asyncio.sleep(2)
-    except asyncio.TimeoutError:
-        logger.warning("[PIPELINE] ⚠ Avatar session startup timed out. Proceeding with voice only.")
-        avatar_ready = False
-        await broadcast_status("avatar", "unavailable")
-    except Exception as e:
-        logger.error(f"[PIPELINE] ✗ Avatar failed: {e}", exc_info=True)
-        avatar_ready = False
-        await broadcast_status("avatar", "error")
-    
-    # Only send greeting AFTER both session and avatar are fully ready
-    if avatar_ready:
-        logger.info("[PIPELINE] Avatar ready - waiting additional 1s before greeting...")
-        await asyncio.sleep(1)
-    
+    # Send greeting immediately (agent is ready, avatar initializes in background)
     logger.info("[PIPELINE] Sending greeting...")
-    await session.say("Hello! I'm your clinic appointment assistant. How can I help you today? Would you like to schedule, reschedule, or cancel an appointment?", allow_interruptions=True)
-    
+    try:
+        await session.say("Hello! I'm your clinic appointment assistant. How can I help you today? Would you like to schedule, reschedule, or cancel an appointment?", allow_interruptions=True)
+    except RuntimeError as e:
+        logger.warning(f"[PIPELINE] Greeting skipped (session already closing): {e}")
+
+    # Initialize Avatar Session in background (non-blocking)
+    async def init_avatar():
+        await broadcast_status("avatar", "initializing")
+        avatar = bey.AvatarSession(
+            api_key=bey_key,
+            avatar_id="b63ba4e6-d346-45d0-ad28-5ddffaac0bd0_v2",  # Jerome - Business (V2)
+        )
+        try:
+            logger.info("[PIPELINE] Starting Beyond Avatar Session...")
+            await asyncio.wait_for(avatar.start(session, room=ctx.room), timeout=10.0)
+            logger.info("[PIPELINE] ✓ Avatar session started successfully")
+            await broadcast_status("avatar", "ready")
+        except asyncio.TimeoutError:
+            logger.warning("[PIPELINE] ⚠ Avatar session startup timed out. Proceeding with voice only.")
+            await broadcast_status("avatar", "unavailable")
+        except Exception as e:
+            logger.error(f"[PIPELINE] ✗ Avatar failed: {e}", exc_info=True)
+            await broadcast_status("avatar", "error")
+
+    # Start avatar initialization as background task (doesn't block greeting)
+    asyncio.create_task(init_avatar())
+
     logger.info("[PIPELINE] ✓ Agent is now listening for user speech...")
-    
+
     # Keep session alive until room closes
     try:
         # Wait indefinitely - session will stay active
@@ -363,4 +390,11 @@ async def entrypoint(ctx: JobContext):
         logger.info(f"Deleted session record for {session_id}")
 
 if __name__ == "__main__":
-    cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint))
+    cli.run_app(
+        WorkerOptions(
+            entrypoint_fnc=entrypoint,
+            ws_url=os.environ.get("LIVEKIT_URL", "").strip(),
+            api_key=os.environ.get("LIVEKIT_API_KEY", "").strip(),
+            api_secret=os.environ.get("LIVEKIT_API_SECRET", "").strip(),
+        )
+    )
