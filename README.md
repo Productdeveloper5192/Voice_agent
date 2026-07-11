@@ -4,6 +4,8 @@ An AI voice agent that answers the phone (or a browser call) for a medical clini
 
 The caller talks to a real-time avatar. Behind the scenes, their speech is transcribed, understood, and acted on in well under a second per turn, and the result is written straight to the clinic's appointment database.
 
+**[Watch the demo video](./Agent.wmv)**
+
 ---
 
 ## 1. The Problem
